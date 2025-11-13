@@ -1,85 +1,64 @@
-import { ApiPath } from "@/app/constant";
-import { NextRequest } from "next/server";
-import { handle as openaiHandler } from "../../openai";
-import { handle as azureHandler } from "../../azure";
-import { handle as googleHandler } from "../../google";
-import { handle as anthropicHandler } from "../../anthropic";
-import { handle as baiduHandler } from "../../baidu";
-import { handle as bytedanceHandler } from "../../bytedance";
-import { handle as alibabaHandler } from "../../alibaba";
-import { handle as moonshotHandler } from "../../moonshot";
-import { handle as stabilityHandler } from "../../stability";
-import { handle as iflytekHandler } from "../../iflytek";
-import { handle as deepseekHandler } from "../../deepseek";
-import { handle as siliconflowHandler } from "../../siliconflow";
-import { handle as xaiHandler } from "../../xai";
-import { handle as chatglmHandler } from "../../glm";
-import { handle as proxyHandler } from "../../proxy";
-import { handle as ai302Handler } from "../../302ai";
+// app/api/dragon/[...path]/route.ts
+import type { NextRequest } from 'next/server';
 
-async function handle(
-  req: NextRequest,
-  { params }: { params: { provider: string; path: string[] } },
-) {
-  const apiPath = `/api/${params.provider}`;
-  console.log(`[${params.provider} Route] params `, params);
-  switch (apiPath) {
-    case ApiPath.Azure:
-      return azureHandler(req, { params });
-    case ApiPath.Google:
-      return googleHandler(req, { params });
-    case ApiPath.Anthropic:
-      return anthropicHandler(req, { params });
-    case ApiPath.Baidu:
-      return baiduHandler(req, { params });
-    case ApiPath.ByteDance:
-      return bytedanceHandler(req, { params });
-    case ApiPath.Alibaba:
-      return alibabaHandler(req, { params });
-    // case ApiPath.Tencent: using "/api/tencent"
-    case ApiPath.Moonshot:
-      return moonshotHandler(req, { params });
-    case ApiPath.Stability:
-      return stabilityHandler(req, { params });
-    case ApiPath.Iflytek:
-      return iflytekHandler(req, { params });
-    case ApiPath.DeepSeek:
-      return deepseekHandler(req, { params });
-    case ApiPath.XAI:
-      return xaiHandler(req, { params });
-    case ApiPath.ChatGLM:
-      return chatglmHandler(req, { params });
-    case ApiPath.SiliconFlow:
-      return siliconflowHandler(req, { params });
-    case ApiPath.OpenAI:
-      return openaiHandler(req, { params });
-    case ApiPath["302.AI"]:
-      return ai302Handler(req, { params });
-    default:
-      return proxyHandler(req, { params });
-  }
+export const runtime = 'edge';
+
+const DRAGON_BASE =
+  process.env.DRAGON_BASE ?? 'https://dragon-api2.vercel.app/api';
+const DRAGON_KEY = process.env.DRAGON_KEY ?? '';
+
+function strip(h: Headers) {
+  const out = new Headers(h);
+  // 移除不该透传的头
+  ['connection', 'keep-alive', 'transfer-encoding', 'content-length', 'host'].forEach((k) =>
+    out.delete(k),
+  );
+  return out;
 }
 
-export const GET = handle;
-export const POST = handle;
+async function proxy(req: NextRequest, subpath: string) {
+  // 预检
+  if (req.method === 'OPTIONS') {
+    return new Response(null, { status: 204 });
+  }
 
-export const runtime = "edge";
-export const preferredRegion = [
-  "arn1",
-  "bom1",
-  "cdg1",
-  "cle1",
-  "cpt1",
-  "dub1",
-  "fra1",
-  "gru1",
-  "hnd1",
-  "iad1",
-  "icn1",
-  "kix1",
-  "lhr1",
-  "pdx1",
-  "sfo1",
-  "sin1",
-  "syd1",
-];
+  const url = `${DRAGON_BASE}/${subpath}`;
+
+  // 基于来端头构造上游头，并强制注入 Dragon Key
+  const headers = strip(req.headers);
+  if (DRAGON_KEY) {
+    headers.set('authorization', `Bearer ${DRAGON_KEY}`);
+    headers.set('x-api-key', DRAGON_KEY);
+  }
+  if (!headers.get('accept')) headers.set('accept', 'application/json');
+
+  const res = await fetch(url, {
+    method: req.method,
+    headers,
+    body: req.body, // Edge Runtime 下可直接透传 ReadableStream，兼容 SSE
+    redirect: 'manual',
+  });
+
+  // 透传响应（含流式）
+  const respHeaders = strip(res.headers);
+  return new Response(res.body, { status: res.status, headers: respHeaders });
+}
+
+export async function GET(req: NextRequest, ctx: { params: { path: string[] } }) {
+  return proxy(req, ctx.params.path.join('/'));
+}
+export async function POST(req: NextRequest, ctx: { params: { path: string[] } }) {
+  return proxy(req, ctx.params.path.join('/'));
+}
+export async function PUT(req: NextRequest, ctx: { params: { path: string[] } }) {
+  return proxy(req, ctx.params.path.join('/'));
+}
+export async function PATCH(req: NextRequest, ctx: { params: { path: string[] } }) {
+  return proxy(req, ctx.params.path.join('/'));
+}
+export async function DELETE(req: NextRequest, ctx: { params: { path: string[] } }) {
+  return proxy(req, ctx.params.path.join('/'));
+}
+export async function HEAD(req: NextRequest, ctx: { params: { path: string[] } }) {
+  return proxy(req, ctx.params.path.join('/'));
+}
