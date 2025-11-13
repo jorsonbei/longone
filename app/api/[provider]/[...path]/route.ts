@@ -1,64 +1,55 @@
-// app/api/dragon/[...path]/route.ts
-import type { NextRequest } from 'next/server';
-
+// app/api/[provider]/[...path]/route.ts
+// 强制把 A 站的 OpenAI 兼容接口代理到 Dragon API（含 GET/POST/流式 + CORS）
 export const runtime = 'edge';
 
 const DRAGON_BASE =
-  process.env.DRAGON_BASE ?? 'https://dragon-api2.vercel.app/api';
-const DRAGON_KEY = process.env.DRAGON_KEY ?? '';
+  process.env.DRAGON_API_BASE || 'https://dragon-api2.vercel.app/api';
+const DRAGON_KEY = process.env.DRAGON_API_KEY || '';
 
-function strip(h: Headers) {
-  const out = new Headers(h);
-  // 移除不该透传的头
-  ['connection', 'keep-alive', 'transfer-encoding', 'content-length', 'host'].forEach((k) =>
-    out.delete(k),
-  );
-  return out;
+function corsHeaders() {
+  return {
+    'access-control-allow-origin': '*',
+    'access-control-allow-headers':
+      'authorization, x-api-key, content-type, accept',
+    'access-control-allow-methods': 'GET, POST, OPTIONS',
+  };
 }
 
-async function proxy(req: NextRequest, subpath: string) {
-  // 预检
-  if (req.method === 'OPTIONS') {
-    return new Response(null, { status: 204 });
-  }
+export async function OPTIONS() {
+  return new Response(null, { status: 204, headers: corsHeaders() });
+}
 
-  const url = `${DRAGON_BASE}/${subpath}`;
+function normalizePath(segments: string[] = []) {
+  const sub = segments.join('/');           // e.g. "v1/chat/completions"
+  return sub.replace(/^v1\//, '');          // -> "chat/completions"
+}
 
-  // 基于来端头构造上游头，并强制注入 Dragon Key
-  const headers = strip(req.headers);
+async function proxy(req: Request, ctx: { params: { provider: string; path: string[] } }) {
+  const p = normalizePath(ctx.params?.path);
+  let target = `${DRAGON_BASE}/${p}`;
+
+  // 常用端点统一映射到 Dragon v1
+  if (p.startsWith('chat/completions')) target = `${DRAGON_BASE}/v1/chat/completions`;
+  else if (p.startsWith('models'))      target = `${DRAGON_BASE}/v1/models`;
+
+  const isGet = req.method === 'GET' || req.method === 'HEAD';
+  const body = isGet ? undefined : await req.arrayBuffer();
+
+  // 组装请求头：强制携带 Dragon Key（覆盖前端传来的 Authorization）
+  const h = new Headers(req.headers);
   if (DRAGON_KEY) {
-    headers.set('authorization', `Bearer ${DRAGON_KEY}`);
-    headers.set('x-api-key', DRAGON_KEY);
+    h.set('authorization', `Bearer ${DRAGON_KEY}`);
+    h.set('x-api-key', DRAGON_KEY);
   }
-  if (!headers.get('accept')) headers.set('accept', 'application/json');
+  if (!h.get('content-type')) h.set('content-type', 'application/json');
 
-  const res = await fetch(url, {
-    method: req.method,
-    headers,
-    body: req.body, // Edge Runtime 下可直接透传 ReadableStream，兼容 SSE
-    redirect: 'manual',
-  });
+  const resp = await fetch(target, { method: req.method, headers: h, body });
+  const pass = new Headers(resp.headers);
+  Object.entries(corsHeaders()).forEach(([k, v]) => pass.set(k, v as string));
+  if (!pass.get('content-type')) pass.set('content-type', 'application/json');
 
-  // 透传响应（含流式）
-  const respHeaders = strip(res.headers);
-  return new Response(res.body, { status: res.status, headers: respHeaders });
+  return new Response(resp.body, { status: resp.status, headers: pass });
 }
 
-export async function GET(req: NextRequest, ctx: { params: { path: string[] } }) {
-  return proxy(req, ctx.params.path.join('/'));
-}
-export async function POST(req: NextRequest, ctx: { params: { path: string[] } }) {
-  return proxy(req, ctx.params.path.join('/'));
-}
-export async function PUT(req: NextRequest, ctx: { params: { path: string[] } }) {
-  return proxy(req, ctx.params.path.join('/'));
-}
-export async function PATCH(req: NextRequest, ctx: { params: { path: string[] } }) {
-  return proxy(req, ctx.params.path.join('/'));
-}
-export async function DELETE(req: NextRequest, ctx: { params: { path: string[] } }) {
-  return proxy(req, ctx.params.path.join('/'));
-}
-export async function HEAD(req: NextRequest, ctx: { params: { path: string[] } }) {
-  return proxy(req, ctx.params.path.join('/'));
-}
+export const GET = proxy;
+export const POST = proxy;
